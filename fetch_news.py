@@ -202,28 +202,38 @@ def clean_summary(s, limit=600):
     return s[:limit]
 
 
-def gemini_enrich(article):
-    if not GEMINI_API_KEY:
-        return {"category": "", "summary": ""}
+def gemini_enrich_batch(articles):
+    """Enrich many articles in ONE Gemini call to stay under free-tier RPM.
+    Returns list aligned with input: [{category, summary}, ...]."""
+    empty = [{"category": "", "summary": ""} for _ in articles]
+    if not GEMINI_API_KEY or not articles:
+        return empty
+
+    items = [{
+        "id": i,
+        "title": a["title"],
+        "source": a.get("source", ""),
+        "summary": clean_summary(a["summary"], 500),
+    } for i, a in enumerate(articles)]
+
     prompt = (
-        "Kamu adalah editor berita Indonesia. Berikut sebuah artikel:\n\n"
-        f"Judul: {article['title']}\n"
-        f"Sumber: {article.get('source','')}\n"
-        f"Ringkasan asli: {clean_summary(article['summary'])}\n\n"
-        "Tugas:\n"
-        "1) Klasifikasikan ke SATU kategori berikut: "
-        "Kriminal, Kecelakaan, Bencana, Kesehatan, Politik, Pemerintahan, "
-        "Pendidikan, Ekonomi, Bisnis, Olahraga, Budaya, Wisata, Inovasi, "
-        "Teknologi, Hiburan, Hukum, Internasional, Lainnya.\n"
-        "2) Buat ringkasan 2-3 kalimat Bahasa Indonesia, factual, "
-        "menonjolkan lokasi spesifik bila berita Blitar (kota/kabupaten/kecamatan/desa).\n\n"
-        "Balas HANYA JSON valid dengan kunci: category, summary."
+        "Kamu adalah editor berita Indonesia. Berikut daftar artikel dalam JSON:\n\n"
+        f"{json.dumps(items, ensure_ascii=False)}\n\n"
+        "Tugas: untuk SETIAP artikel di list, klasifikasikan ke SATU kategori "
+        "berikut: Kriminal, Kecelakaan, Bencana, Kesehatan, Politik, "
+        "Pemerintahan, Pendidikan, Ekonomi, Bisnis, Olahraga, Budaya, "
+        "Wisata, Inovasi, Teknologi, Hiburan, Hukum, Internasional, Lainnya. "
+        "Lalu buat ringkasan 2-3 kalimat Bahasa Indonesia yang factual, "
+        "menonjolkan lokasi spesifik bila berita Blitar "
+        "(kota/kabupaten/kecamatan/desa).\n\n"
+        "Balas JSON array dengan tepat satu elemen per artikel input, "
+        "struktur: {id, category, summary}. Urutkan sesuai id input."
     )
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.3,
-            "maxOutputTokens": 350,
+            "maxOutputTokens": 350 * len(articles),
             "responseMimeType": "application/json",
         },
     }
@@ -232,33 +242,49 @@ def gemini_enrich(article):
         f"models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
     )
     try:
-        r = requests.post(url, json=body, timeout=45)
+        r = requests.post(url, json=body, timeout=90)
         data = r.json()
     except Exception as e:
         print(f"[warn] gemini http: {e}", file=sys.stderr)
-        return {"category": "", "summary": ""}
+        return empty
     cands = data.get("candidates") or []
     if not cands:
         err = data.get("error") or {}
         if err:
             print(f"[warn] gemini api: {err.get('message','')}", file=sys.stderr)
-        return {"category": "", "summary": ""}
+        return empty
     parts = (cands[0].get("content") or {}).get("parts") or []
     text = "".join(p.get("text", "") for p in parts).strip()
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", text, re.DOTALL)
+        m = re.search(r"\[.*\]", text, re.DOTALL)
         if not m:
-            return {"category": "Lainnya", "summary": text[:300]}
+            print(f"[warn] gemini: tidak bisa parse JSON", file=sys.stderr)
+            return empty
         try:
             parsed = json.loads(m.group(0))
-        except Exception:
-            return {"category": "Lainnya", "summary": text[:300]}
-    return {
-        "category": (parsed.get("category") or "").strip() or "Lainnya",
-        "summary": (parsed.get("summary") or "").strip(),
-    }
+        except Exception as e:
+            print(f"[warn] gemini parse: {e}", file=sys.stderr)
+            return empty
+
+    if not isinstance(parsed, list):
+        return empty
+
+    out = [{"category": "", "summary": ""} for _ in articles]
+    for elem in parsed:
+        if not isinstance(elem, dict):
+            continue
+        try:
+            idx = int(elem.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= idx < len(out):
+            out[idx] = {
+                "category": (elem.get("category") or "").strip() or "Lainnya",
+                "summary": (elem.get("summary") or "").strip(),
+            }
+    return out
 
 
 # --- Telegram ----------------------------------------------------------------
@@ -391,11 +417,11 @@ def main():
         save_seen(seen | keys_in_run)  # still persist anything dropped via cap? no, only sent
         return
 
-    # Enrich with Gemini
-    for a in capped:
-        enrich = gemini_enrich(a)
-        a["ai_category"] = enrich["category"]
-        a["ai_summary"] = enrich["summary"]
+    # Enrich with Gemini (single batched call, hemat kuota free tier)
+    enriched = gemini_enrich_batch(capped)
+    for a, e in zip(capped, enriched):
+        a["ai_category"] = e["category"]
+        a["ai_summary"] = e["summary"]
 
     # Send
     sent_keys = set()
