@@ -78,6 +78,18 @@ CATEGORY_EMOJI = {
 
 TAG_RE = re.compile(r"<[^>]+>")
 IMG_RE = re.compile(r"""<img[^>]+src=['"]([^'"]+)['"]""", re.IGNORECASE)
+OG_IMG_RE = re.compile(
+    r'<meta[^>]+(?:property|name)=["\'](?:og:image|og:image:url|twitter:image|twitter:image:src)["\'][^>]+content=["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+META_REFRESH_RE = re.compile(
+    r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\']\s*\d+\s*;\s*url=([^"\']+)["\']',
+    re.IGNORECASE,
+)
+SCRAPE_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
 
 
 # --- State (dedupe across runs) ----------------------------------------------
@@ -112,6 +124,96 @@ def dedupe_key(article):
 
 
 # --- Fetching ----------------------------------------------------------------
+
+def _absolutize(img, base_url):
+    if not img:
+        return None
+    img = img.strip()
+    if img.startswith("//"):
+        return "https:" + img
+    if img.startswith("/"):
+        try:
+            from urllib.parse import urlsplit
+            p = urlsplit(base_url)
+            return f"{p.scheme}://{p.netloc}{img}"
+        except Exception:
+            return None
+    if img.startswith(("http://", "https://")):
+        return img
+    return None
+
+
+def _http_get(url, timeout=8):
+    return requests.get(
+        url,
+        timeout=timeout,
+        allow_redirects=True,
+        headers={
+            "User-Agent": SCRAPE_UA,
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "id-ID,id;q=0.9,en;q=0.5",
+        },
+    )
+
+
+def _find_in_gnews_html(html_text):
+    # Cari URL artikel asli di halaman intermediate Google News.
+    for pat in (
+        r'data-n-au=["\']([^"\']+)["\']',
+        r'data-url=["\'](https?://[^"\']+)["\']',
+        r'href=["\'](https?://[^"\']+)["\'][^>]*data-articleurl',
+        r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^"\']+)["\']',
+    ):
+        m = re.search(pat, html_text)
+        if m:
+            u = m.group(1)
+            if "news.google.com" not in u and u.startswith("http"):
+                return u
+    return None
+
+
+def scrape_og_image(url, timeout=8, hops_left=2):
+    """Best-effort: fetch URL, follow meta-refresh & Google News redirects,
+    return og:image / twitter:image URL or None."""
+    if not url or hops_left <= 0:
+        return None
+    try:
+        r = _http_get(url, timeout=timeout)
+    except Exception as e:
+        print(f"[warn] scrape_og GET {url[:80]}: {e}", file=sys.stderr)
+        return None
+    if r.status_code >= 400:
+        return None
+    text = r.text or ""
+    snippet = text[:200000]
+    final_url = r.url or url
+
+    # Google News intermediate: hop to real URL
+    if "news.google.com" in final_url:
+        real = _find_in_gnews_html(snippet)
+        if real:
+            return scrape_og_image(real, timeout=timeout, hops_left=hops_left - 1)
+        # fallback: meta-refresh
+        mref = META_REFRESH_RE.search(snippet)
+        if mref:
+            return scrape_og_image(mref.group(1), timeout=timeout, hops_left=hops_left - 1)
+        return None
+
+    # Direct og:image / twitter:image
+    m = OG_IMG_RE.search(snippet)
+    if m:
+        return _absolutize(m.group(1), final_url)
+
+    # Meta-refresh anywhere
+    mref = META_REFRESH_RE.search(snippet)
+    if mref:
+        nxt = mref.group(1)
+        if not nxt.startswith("http"):
+            nxt = _absolutize(nxt, final_url)
+        if nxt:
+            return scrape_og_image(nxt, timeout=timeout, hops_left=hops_left - 1)
+    return None
+
 
 def extract_image(entry):
     for m in getattr(entry, "media_content", []) or []:
@@ -416,6 +518,17 @@ def main():
     if not capped:
         save_seen(seen | keys_in_run)  # still persist anything dropped via cap? no, only sent
         return
+
+    # Cari gambar untuk yang belum punya (Google News RSS tidak menyertakan)
+    no_img = sum(1 for a in capped if not a["image"])
+    if no_img:
+        print(f"scraping og:image for {no_img} articles without RSS image")
+    for a in capped:
+        if a["image"]:
+            continue
+        img = scrape_og_image(a["link"])
+        if img:
+            a["image"] = img
 
     # Enrich with Gemini (single batched call, hemat kuota free tier)
     enriched = gemini_enrich_batch(capped)
