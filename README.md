@@ -1,61 +1,81 @@
 # berita-indonesia
 
-Kirim 3 headline berita kritis Indonesia ke Telegram tiap jam (06:00-23:00 WIB) via GitHub Actions. **100% gratis.**
+Channel Telegram untuk berita Indonesia **+ berita Blitar lengkap** (kota,
+kabupaten, semua kecamatan). Polling tiap 15 menit via GitHub Actions, dedupe
+lintas run, dan **ringkasan + kategorisasi otomatis oleh Gemini AI**.
+**100% gratis.**
 
-## Cara setup (~5 menit)
+## Sumber
 
-### 1. Buat repo private di GitHub
-- Buka https://github.com/new
-- Nama: `berita-indonesia` (atau bebas)
-- Pilih **Private**
-- Klik **Create repository**
+- **Nasional**: Antara (Politik/Ekonomi/Hukum/Peristiwa), Detik, BBC Indonesia,
+  Tempo, CNN Indonesia, Kompas. Difilter ke berita "kritis" via keyword.
+- **Blitar**: Google News RSS untuk 27 query (Blitar, Kota Blitar, Kabupaten
+  Blitar, dan semua kecamatan Wlingi, Sutojayan, Kanigoro, Srengat, Garum, dst).
+  Google News mengindeks ratusan portal sehingga coverage luas.
 
-### 2. Upload file
-Dari folder ini, push ke repo baru:
+Setiap artikel baru:
+- Dilewatkan ke **Gemini 2.5 Flash** untuk dapat **kategori** (Kriminal,
+  Kesehatan, Politik, dll) dan **ringkasan 2-3 kalimat**.
+- Dikirim ke Telegram dengan foto (kalau ada), badge `📍 BLITAR` atau `🇮🇩 NASIONAL`,
+  emoji kategori, ringkasan AI, dan link sumber.
 
+State (artikel yang sudah dikirim) di-commit ke `state/seen.txt` supaya
+tidak duplikat antar run.
+
+## Setup (~5 menit)
+
+### 1. Push repo
 ```bash
 cd D:/marco/berita-indonesia
-git init
 git add .
-git commit -m "initial setup"
-git branch -M main
-git remote add origin https://github.com/<USERNAME>/<NAMA-REPO>.git
-git push -u origin main
+git commit -m "update: integrasi Blitar + Gemini AI"
+git push
 ```
 
-Ganti `<USERNAME>` dan `<NAMA-REPO>` sesuai akun & repo Anda.
+### 2. Tambah Secrets
+Settings → Secrets and variables → Actions → New repository secret:
 
-### 3. Tambahkan secrets
-Di repo GitHub Anda:
-1. **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
-2. Tambah 2 secret:
-   - Name: `TELEGRAM_BOT_TOKEN`  Value: token bot Telegram dari BotFather
-   - Name: `TELEGRAM_CHAT_ID`  Value: chat ID Telegram Anda
+| Secret | Isi |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | token dari BotFather |
+| `TELEGRAM_CHAT_ID`   | chat ID Telegram tujuan |
+| `GEMINI_API_KEY`     | dari https://aistudio.google.com/apikey |
 
-### 4. Aktifkan Actions & test
-1. Tab **Actions** → klik **I understand my workflows, go ahead and enable them**
-2. Pilih workflow **berita-indonesia** → **Run workflow** → **Run workflow** (test manual)
-3. Cek Telegram — pesan harus masuk dalam 1-2 menit
+### 3. (Opsional) Tambah Variables
+Settings → Secrets and variables → Actions → **Variables** tab:
 
-Selesai. Setelah ini, workflow akan jalan otomatis tiap jam saat 06:00-23:00 WIB tanpa biaya apa pun.
+| Variable | Default | Catatan |
+|---|---|---|
+| `GEMINI_MODEL` | `gemini-2.5-flash` | bisa diganti `gemini-2.5-pro` (lebih cerdas, lebih lambat) |
+| `MAX_PER_RUN`  | `15` | batas artikel per run, hindari flood |
+
+### 4. Aktifkan & test
+1. Tab **Actions** → enable workflows
+2. Pilih **berita-indonesia** → **Run workflow** untuk test manual
+3. Cek Telegram dalam 1-2 menit
+
+Setelah ini workflow jalan otomatis tiap 15 menit.
+
+## Catatan kuota
+
+Repo private dapat 2000 menit/bulan free Actions. Cron 15 menit ≈ 2880 run/bulan;
+tiap run ~1 menit → bisa habis ~2880 menit. **Opsi**:
+- Ubah repo jadi public (Actions unlimited).
+- Atau ubah cron jadi `*/30 * * * *` (kuota cukup).
 
 ## Customize
 
 ### Ubah jadwal
-Edit `.github/workflows/schedule.yml`, ubah `cron`. Format UTC. Contoh:
-- `0 */2 * * *` — tiap 2 jam
-- `0 0 * * *` — sekali sehari jam 07:00 WIB
+Edit `.github/workflows/schedule.yml`, ganti `cron`. Format UTC.
 
-### Ubah sumber atau keyword filter
-Edit `fetch_news.py`:
-- `FEEDS` — daftar RSS sumber berita
-- `CRITICAL_KEYWORDS` — keyword untuk filter "kritis"
-- Angka 3 di `pick_top(articles, n=3)` untuk ubah jumlah headline
+### Tambah/ubah kecamatan Blitar
+Edit `BLITAR_QUERIES` dan `BLITAR_NEEDLES` di `fetch_news.py`.
 
-## Cara matikan
-- Tab **Actions** → pilih **berita-indonesia** → **...** → **Disable workflow**
-- Atau hapus repo
+### Tambah sumber nasional
+Edit `NATIONAL_FEEDS` di `fetch_news.py`.
 
-## Setelah ini jalan, matikan routine Claude
-Routine Claude di https://claude.ai/code/routines/trig_01VxKJi9Tzt3xiyzowAGfawk
-→ Disable supaya tidak boros kuota API.
+### Matikan AI sementara
+Hapus secret `GEMINI_API_KEY` — script tetap jalan tanpa ringkasan AI.
+
+## Matikan total
+Actions → workflow → ... → Disable workflow. Atau hapus repo.

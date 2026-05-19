@@ -2,9 +2,16 @@ name: berita-indonesia
 
 on:
   schedule:
-    # tiap jam pada menit :00, hanya saat 06:00-23:00 WIB (= 23 UTC + 00-16 UTC)
-    - cron: "0 0-16,23 * * *"
+    # tiap 15 menit (GitHub Actions cron = UTC, best-effort, kadang delay)
+    - cron: "*/15 * * * *"
   workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: berita-indonesia
+  cancel-in-progress: false
 
 jobs:
   send:
@@ -20,7 +27,23 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - run: python fetch_news.py
+      - name: Fetch & send
+        run: python fetch_news.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          MAX_PER_RUN: ${{ vars.MAX_PER_RUN }}
+
+      - name: Commit state if changed
+        run: |
+          if [[ -n "$(git status --porcelain state/)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state/
+            git commit -m "state: update seen.txt"
+            git push
+          else
+            echo "no state change"
+          fi
