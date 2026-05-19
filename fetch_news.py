@@ -20,11 +20,16 @@ if hasattr(sys.stdout, "reconfigure"):
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
-MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN", "15"))
-STATE_FILE = os.environ.get("STATE_FILE", "state/seen.txt")
-STATE_MAX = int(os.environ.get("STATE_MAX", "5000"))
+def _env_int(name, default):
+    v = (os.environ.get(name) or "").strip()
+    return int(v) if v else default
+
+
+GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
+GEMINI_MODEL = (os.environ.get("GEMINI_MODEL") or "").strip() or "gemini-2.5-flash"
+MAX_PER_RUN = _env_int("MAX_PER_RUN", 15)
+STATE_FILE = (os.environ.get("STATE_FILE") or "").strip() or "state/seen.txt"
+STATE_MAX = _env_int("STATE_MAX", 5000)
 
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
