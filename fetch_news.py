@@ -264,7 +264,7 @@ def gemini_enrich(article):
 # --- Telegram ----------------------------------------------------------------
 
 def esc(s):
-    return html.escape(s or "", quote=False)
+    return html.escape(s or "", quote=True)
 
 
 def now_wib():
@@ -304,6 +304,10 @@ def tg_post(endpoint, payload, expect_ok=True):
     return r, body
 
 
+def _strip_html_tags(s):
+    return TAG_RE.sub("", html.unescape(s or ""))
+
+
 def send_article(article):
     caption = build_caption(article)
     if article["image"]:
@@ -315,11 +319,27 @@ def send_article(article):
         }, expect_ok=False)
         if body.get("ok"):
             return True
-        print(f"[warn] sendPhoto failed, falling back to text", file=sys.stderr)
+        print(f"[warn] sendPhoto HTML failed, retrying as plain", file=sys.stderr)
+        r, body = tg_post("sendPhoto", {
+            "chat_id": CHAT_ID,
+            "photo": article["image"],
+            "caption": _strip_html_tags(caption)[:1020],
+        }, expect_ok=False)
+        if body.get("ok"):
+            return True
+        print(f"[warn] sendPhoto plain also failed, fallback to text", file=sys.stderr)
     r, body = tg_post("sendMessage", {
         "chat_id": CHAT_ID,
         "text": caption,
         "parse_mode": "HTML",
+        "disable_web_page_preview": False,
+    }, expect_ok=False)
+    if body.get("ok"):
+        return True
+    # Last resort: plain text (no parse_mode) so Telegram can't reject parsing
+    r, body = tg_post("sendMessage", {
+        "chat_id": CHAT_ID,
+        "text": _strip_html_tags(caption),
         "disable_web_page_preview": False,
     })
     return bool(body.get("ok"))
